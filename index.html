@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operações - Login</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="login-container">
+  <div class="login-box">
+    <h1>⚙️ Operações</h1>
+    <p>Sistema de Rotinas e Escalas</p>
+    <input type="text" id="username" placeholder="Usuário" autocomplete="off">
+    <input type="password" id="password" placeholder="Senha">
+    <button class="btn-login" onclick="fazerLogin()">Entrar</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+<script>
+const USERS = {
+  'Coamo1': { senha: 'Coamo1',   role: 'operador' },
+  'admin':  { senha: 'admin123', role: 'admin'    },
+};
+
+function fazerLogin() {
+  const u = document.getElementById('username').value.trim();
+  const p = document.getElementById('password').value;
+  if (USERS[u] && USERS[u].senha === p) {
+    sessionStorage.setItem('user', u);
+    sessionStorage.setItem('role', USERS[u].role);
+    window.location.href = 'dashboard.html';
+  } else {
+    document.getElementById('loginError').textContent = 'Usuário ou senha incorretos.';
+  }
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') fazerLogin(); });
+</script>
+</body>
+</html>

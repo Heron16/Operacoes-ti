@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operações - Horários</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .edit-btn {
+      background: rgba(79,195,247,0.15); border: 1px solid rgba(79,195,247,0.3);
+      color: #4fc3f7; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+      font-size: 0.85rem; transition: all 0.2s;
+    }
+    .edit-btn:hover { background: #4fc3f7; color: #000; }
+    .add-turno-btn {
+      background: none; border: 1px dashed rgba(79,195,247,0.3);
+      color: #4fc3f7; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 0.8rem; margin-top: 6px; transition: all 0.2s;
+    }
+    .add-turno-btn:hover { background: rgba(79,195,247,0.1); }
+    .del-btn {
+      background: none; border: none; color: #ff6b6b; cursor: pointer;
+      font-size: 0.9rem; padding: 0 4px;
+    }
+    .turno-row-edit { display: grid; grid-template-columns: 110px 1fr 1fr 24px; gap: 6px; margin-bottom: 6px; align-items: center; }
+    .add-dia-btn {
+      background: rgba(79,195,247,0.1); border: 1px dashed rgba(79,195,247,0.3);
+      color: #4fc3f7; padding: 10px; border-radius: 10px; cursor: pointer;
+      font-size: 0.9rem; width: 100%; margin-bottom: 16px; transition: all 0.2s;
+    }
+    .add-dia-btn:hover { background: rgba(79,195,247,0.2); }
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #16213e; border: 1px solid rgba(79,195,247,0.3);
+      border-radius: 12px; padding: 28px; width: 420px; max-width: 95vw;
+    }
+    .modal h3 { color: #4fc3f7; margin-bottom: 16px; }
+    .modal input, .modal select {
+      width: 100%; padding: 8px 12px; margin-bottom: 10px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px; color: #fff; font-size: 0.9rem; outline: none;
+    }
+    .modal-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+    .btn-cancel { background: rgba(255,107,107,0.15); border: 1px solid rgba(255,107,107,0.3); color: #ff6b6b; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+    .btn-confirm { background: rgba(79,195,247,0.15); border: 1px solid rgba(79,195,247,0.3); color: #4fc3f7; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Sistema de Operações</h1>
+  <div class="header-right">
+    <span id="relogioHeader" style="color:#aaa;font-size:0.85rem;"></span>
+    <span class="user-badge" id="userBadge"></span>
+    <button class="btn-logout" onclick="logout()">Sair</button>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn" onclick="window.location.href='dashboard.html'">📋 Rotinas</button>
+  <button class="tab-btn active">🗓️ Horários</button>
+</div>
+
+<div class="tab-content active" id="horarioContainer">
+  <div class="horario-header">
+    <div class="mes-nav">
+      <button onclick="mudarMes(-1)">‹</button>
+      <div class="mes-titulo" id="mesTitulo"></div>
+      <button onclick="mudarMes(1)">›</button>
+    </div>
+    <div id="editControls"></div>
+  </div>
+  <div id="diasContainer"></div>
+</div>
+
+<!-- Modal adicionar dia -->
+<div class="modal-overlay" id="modalDia">
+  <div class="modal">
+    <h3>Adicionar Dia</h3>
+    <input type="date" id="modalData">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="fecharModal()">Cancelar</button>
+      <button class="btn-confirm" onclick="confirmarAddDia()">Adicionar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const user = sessionStorage.getItem('user');
+const role = sessionStorage.getItem('role');
+if (!user || !['operador','admin'].includes(role)) {
+  sessionStorage.clear();
+  window.location.href = 'index.html';
+}
+
+document.getElementById('userBadge').textContent = '👤 ' + user + ' (' + role + ')';
+function logout() { sessionStorage.clear(); window.location.href = 'index.html'; }
+
+const canEdit = (role === 'admin');
+
+const DIAS_SEMANA = ['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+const MESES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+let mesAtual = new Date().getMonth();
+let anoAtual = new Date().getFullYear();
+
+function getKey(ano, mes) { return `horarios_${ano}_${mes}`; }
+function getDados(ano, mes) {
+  try { return JSON.parse(localStorage.getItem(getKey(ano, mes)) || '[]'); } catch { return []; }
+}
+function salvarDados(ano, mes, dados) {
+  localStorage.setItem(getKey(ano, mes), JSON.stringify(dados));
+}
+
+function mudarMes(delta) {
+  mesAtual += delta;
+  if (mesAtual > 11) { mesAtual = 0; anoAtual++; }
+  if (mesAtual < 0) { mesAtual = 11; anoAtual--; }
+  renderHorarios();
+}
+
+function renderHorarios() {
+  document.getElementById('mesTitulo').textContent = MESES_NOME[mesAtual] + ' / ' + anoAtual;
+  const dados = getDados(anoAtual, mesAtual);
+  const hoje = new Date();
+  let html = '';
+
+  if (canEdit) {
+    html += `<button class="add-dia-btn" onclick="abrirModalDia()">+ Adicionar Dia</button>`;
+  }
+
+  if (dados.length === 0) {
+    html += `<div style="color:#aaa;text-align:center;padding:40px;">Nenhum dia cadastrado para este mês.</div>`;
+  }
+
+  dados.sort((a, b) => a.data.localeCompare(b.data));
+
+  dados.forEach((dia, diaIdx) => {
+    const d = new Date(dia.data + 'T12:00:00');
+    const isHoje = d.toDateString() === hoje.toDateString();
+    const nomeDia = DIAS_SEMANA[d.getDay()].toUpperCase();
+    const dataFmt = d.toLocaleDateString('pt-BR');
+
+    html += `<div class="dia-card">
+      <div class="dia-header ${isHoje ? 'hoje' : ''}">
+        <span>${nomeDia} - ${dataFmt} ${isHoje ? '<span class="badge-hoje">HOJE</span>' : ''}</span>
+        ${canEdit ? `<button class="del-btn" title="Remover dia" onclick="removerDia(${diaIdx})">🗑️</button>` : ''}
+      </div>
+      <div class="dia-body">`;
+
+    if (canEdit) {
+      // Modo edição
+      dia.turnos.forEach((t, tIdx) => {
+        html += `<div class="turno-row-edit">
+          <input class="turno-input" placeholder="Horário (ex: 06:00)" value="${t.hora||''}"
+            onblur="editarTurno(${diaIdx},${tIdx},'hora',this.value)">
+          <input class="turno-input" placeholder="Nome(s)" value="${t.nome||''}"
+            onblur="editarTurno(${diaIdx},${tIdx},'nome',this.value)">
+          <input class="turno-input" placeholder="Observação" value="${t.obs||''}"
+            onblur="editarTurno(${diaIdx},${tIdx},'obs',this.value)">
+          <button class="del-btn" onclick="removerTurno(${diaIdx},${tIdx})">✕</button>
+        </div>`;
+      });
+      html += `<button class="add-turno-btn" onclick="addTurno(${diaIdx})">+ Turno</button>`;
+    } else {
+      // Modo visualização
+      if (dia.turnos.length === 0) {
+        html += `<div style="color:#aaa;font-size:0.85rem;">Sem turnos cadastrados.</div>`;
+      }
+      dia.turnos.forEach(t => {
+        html += `<div class="turno-row">
+          <div class="turno-hora">${t.hora || ''}</div>
+          <div class="turno-nome">${t.nome || ''}</div>
+          <div class="turno-obs">${t.obs || ''}</div>
+        </div>`;
+      });
+    }
+
+    html += `</div></div>`;
+  });
+
+  document.getElementById('diasContainer').innerHTML = html;
+}
+
+function abrirModalDia() {
+  document.getElementById('modalDia').classList.add('open');
+  // Pré-preencher com primeiro dia do mês atual
+  const d = new Date(anoAtual, mesAtual, 1);
+  document.getElementById('modalData').value = d.toISOString().split('T')[0];
+}
+function fecharModal() {
+  document.getElementById('modalDia').classList.remove('open');
+}
+function confirmarAddDia() {
+  const dataVal = document.getElementById('modalData').value;
+  if (!dataVal) return;
+  const dados = getDados(anoAtual, mesAtual);
+  // Verificar se já existe
+  if (dados.find(d => d.data === dataVal)) { fecharModal(); return; }
+  dados.push({ data: dataVal, turnos: [{ hora: '', nome: '', obs: '' }] });
+  salvarDados(anoAtual, mesAtual, dados);
+  fecharModal();
+  renderHorarios();
+}
+
+function removerDia(idx) {
+  if (!confirm('Remover este dia?')) return;
+  const dados = getDados(anoAtual, mesAtual);
+  dados.splice(idx, 1);
+  salvarDados(anoAtual, mesAtual, dados);
+  renderHorarios();
+}
+
+function addTurno(diaIdx) {
+  const dados = getDados(anoAtual, mesAtual);
+  dados[diaIdx].turnos.push({ hora: '', nome: '', obs: '' });
+  salvarDados(anoAtual, mesAtual, dados);
+  renderHorarios();
+}
+
+function removerTurno(diaIdx, tIdx) {
+  const dados = getDados(anoAtual, mesAtual);
+  dados[diaIdx].turnos.splice(tIdx, 1);
+  salvarDados(anoAtual, mesAtual, dados);
+  renderHorarios();
+}
+
+function editarTurno(diaIdx, tIdx, campo, valor) {
+  const dados = getDados(anoAtual, mesAtual);
+  dados[diaIdx].turnos[tIdx][campo] = valor;
+  salvarDados(anoAtual, mesAtual, dados);
+}
+
+function atualizarRelogio() {
+  const now = new Date();
+  document.getElementById('relogioHeader').textContent =
+    now.toLocaleDateString('pt-BR', {weekday:'short', day:'2-digit', month:'2-digit', year:'numeric'}) +
+    ' ' + now.toLocaleTimeString('pt-BR');
+}
+
+// Auto-avança mês APENAS se o usuário estiver visualizando o mês atual
+// Não apaga dados — só muda a visualização
+function verificarMes() {
+  const hoje = new Date();
+  const mesHoje = hoje.getMonth();
+  const anoHoje = hoje.getFullYear();
+  // Só avança se o usuário está no mês atual que acabou de virar
+  if (mesAtual === mesHoje && anoAtual === anoHoje) return; // já está no mês certo
+  // Verifica se o mês exibido era o mês anterior ao atual
+  const eraMesAnterior = (
+    (mesAtual === mesHoje - 1 && anoAtual === anoHoje) ||
+    (mesAtual === 11 && mesHoje === 0 && anoAtual === anoHoje - 1)
+  );
+  if (eraMesAnterior) {
+    mesAtual = mesHoje;
+    anoAtual = anoHoje;
+    renderHorarios();
+  }
+}
+
+renderHorarios();
+atualizarRelogio();
+setInterval(atualizarRelogio, 1000);
+setInterval(verificarMes, 60000);
+</script>
+</body>
+</html>

@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operações – Coamo</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* ── PRINT / PDF ── */
+    @media print {
+      header, .tabs, .btn-exportar, .btn-block, .btn-logout,
+      .rotina-actions select, .rotina-actions button,
+      input, textarea, select { display: none !important; }
+      body { background: #fff !important; color: #000 !important; }
+      .tab-content { display: block !important; padding: 0 !important; }
+      .rotina-item {
+        border: 1px solid #ddd; margin-bottom: 5px; padding: 6px 8px;
+        border-radius: 4px; break-inside: avoid;
+        border-left: 3px solid #ccc !important;
+        background: #fff !important; opacity: 1 !important;
+      }
+      .rotina-item.erro  { border-left-color: #cf222e !important; background: #fff5f5 !important; }
+      .rotina-item.done  { border-left-color: #1a7f37 !important; }
+      .rotina-item.blocked { display: none !important; }
+      .rotina-time    { color: #0550ae; font-weight: 700; }
+      .rotina-text    { color: #000; font-weight: 600; }
+      .rotina-obs     { color: #555; }
+      .rotina-caminho { color: #0550ae; }
+      .rotina-section h3 { color: #0550ae; border-bottom: 1px solid #ccc; }
+      .movimento-header {
+        color: #000; font-size: 1rem; font-weight: bold;
+        margin-bottom: 10px; border: 1px solid #ccc; padding: 6px 10px;
+        background: #f0f6ff !important;
+      }
+      .corvu-table th { background: #e8f0fe !important; color: #000; text-align: center; }
+      .corvu-table td, .corvu-table th { border: 1px solid #ccc; padding: 4px 6px; }
+      .corvu-nome { color: #000; }
+      .aviso-dia-anterior { background: #fff8e1 !important; color: #7a4f00; border-color: #f0c040; }
+      .erro-msg-view { color: #cf222e !important; }
+      .print-value {
+        display: inline !important; font-size: 0.82rem;
+        font-weight: 600; padding: 0 2px;
+      }
+      .hora-row { display: flex !important; gap: 8px; margin-top: 4px; }
+      .hora-label { color: #555; font-size: 0.75rem; }
+    }
+
+    /* Ocultar linhas PDF fora do print */
+    .pdf-rotina-linha { display: none; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>⚙️ Sistema de Operações – Coamo</h1>
+  <div class="header-right">
+    <span id="relogioHeader"></span>
+    <span class="user-badge" id="userBadge"></span>
+    <button class="btn-exportar" onclick="exportarPDF()" title="Exportar PDF">🖨️ Exportar PDF</button>
+    <button class="btn-logout" onclick="logout()">Sair</button>
+  </div>
+</header>
+
+<div class="tabs" id="tabBar"></div>
+
+<div id="tab-diario"      class="tab-content active"></div>
+<div id="tab-corvudiario" class="tab-content"></div>
+<div id="tab-fds"         class="tab-content"></div>
+<div id="tab-mensal"      class="tab-content"></div>
+<div id="tab-corvumensal" class="tab-content"></div>
+<div id="tab-unimed"      class="tab-content"></div>
+<div id="tab-serasa"      class="tab-content"></div>
+
+<script src="data.js"></script>
+<script>
+// ── AUTH ─────────────────────────────────────────────────────────────
+const user = sessionStorage.getItem('user');
+const role = sessionStorage.getItem('role');
+if (!user || !['operador','admin'].includes(role)) {
+  sessionStorage.clear(); window.location.href = 'index.html';
+}
+document.getElementById('userBadge').textContent = '👤 ' + user + ' (' + role + ')';
+function logout() { sessionStorage.clear(); window.location.href = 'index.html'; }
+
+// ── ABAS ──────────────────────────────────────────────────────────────
+const TABS = [
+  { id:'diario',      label:'📋 Diário'          },
+  { id:'corvudiario', label:'🖥️ Corvu Diário'    },
+  { id:'fds',         label:'📆 Final de Semana' },
+  { id:'mensal',      label:'📅 Mensal'           },
+  { id:'corvumensal', label:'🖥️ Corvu Mensal'    },
+  { id:'unimed',      label:'🏥 Unimed'           },
+  { id:'serasa',      label:'🔍 Serasa'           },
+];
+let abaAtiva = 'diario';
+
+// ── ABAS DINÂMICAS DO DIA ANTERIOR ───────────────────────────────────
+// Verifica se há rotinas ou corvus do dia anterior ainda em execução
+// e cria/remove abas dinâmicas conforme necessário
+
+function getDiasAnterioresComPendentes() {
+  const dias = [];
+  let chave = diaAtual;
+  for (let i = 0; i < 3; i++) {
+    chave = getDiaAnteriorKey(chave);
+    const sRotinas = getStatus('diario', chave);
+    // Corvu diário agora também usa chave com data
+    const sCorvu = getCorvuDadosDia(chave);
+    const temRotinas = Object.values(sRotinas).some(v => v && v.status === 'executando');
+    // Corvu tem pendente se alguma linha tem início mas não tem fim
+    const temCorvu = Object.values(sCorvu).some(v => v && v.inicio && !v.fim);
+    if (temRotinas || temCorvu) dias.push({ diaKey: chave, temRotinas, temCorvu });
+    else break;
+  }
+  return dias;
+}
+
+// Corvu diário agora salva por data para suportar dia anterior
+function getCorvuDadosDia(diaKey) {
+  const k = 'corvu_dados_corvu_' + (diaKey || diaAtual);
+  try { return JSON.parse(lerChave(k) || '{}'); } catch { return {}; }
+}
+function saveCorvuCampoDia(diaKey, idx, campo, val) {
+  const k = 'corvu_dados_corvu_' + (diaKey || diaAtual);
+  const d = getCorvuDadosDia(diaKey);
+  if (!d[idx]) d[idx] = {};
+  d[idx][campo] = val;
+  salvarChave(k, JSON.stringify(d));
+  if (USAR_API) _cache[k] = JSON.stringify(d);
+}
+
+function garantirTabDinamica(diaKey) {
+  // IDs usados: tab-diario-YYYY-MM-DD e tab-corvu-YYYY-MM-DD
+  const idRotinas = 'tab-diario-' + diaKey;
+  const idCorvu   = 'tab-corvu-'  + diaKey;
+  if (!document.getElementById(idRotinas)) {
+    const d1 = document.createElement('div');
+    d1.id = idRotinas; d1.className = 'tab-content';
+    document.body.appendChild(d1);
+  }
+  if (!document.getElementById(idCorvu)) {
+    const d2 = document.createElement('div');
+    d2.id = idCorvu; d2.className = 'tab-content';
+    document.body.appendChild(d2);
+  }
+}
+
+function renderTabBar() {
+  const diasAnt = getDiasAnterioresComPendentes();
+
+  // Garante que os divs das abas dinâmicas existam
+  diasAnt.forEach(({ diaKey }) => garantirTabDinamica(diaKey));
+
+  const [,m,d] = diaAtual.split('-');
+  let html = '';
+
+  // Abas do dia anterior (aparecem antes das abas do dia atual)
+  diasAnt.forEach(({ diaKey }) => {
+    const [,am,ad] = diaKey.split('-');
+    const label = `${ad}/${am}`;
+    const idR = 'tab-diario-' + diaKey;
+    const idC = 'tab-corvu-'  + diaKey;
+    html += `<button class="tab-btn tab-btn-anterior${abaAtiva===idR?' active':''}" onclick="abrirTab('${idR}')">⚠️ Diário ${label}</button>`;
+    html += `<button class="tab-btn tab-btn-anterior${abaAtiva===idC?' active':''}" onclick="abrirTab('${idC}')">⚠️ Corvu ${label}</button>`;
+  });
+
+  // Abas fixas normais
+  TABS.forEach(t => {
+    html += `<button class="tab-btn${abaAtiva===t.id?' active':''}" onclick="abrirTab('${t.id}')">${t.label}</button>`;
+  });
+  html += `<button class="tab-btn" onclick="window.location.href='horarios.html'">🗓️ Horários</button>`;
+
+  document.getElementById('tabBar').innerHTML = html;
+}
+
+function abrirTab(id) {
+  abaAtiva = id;
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  // Abas dinâmicas já têm ID completo (tab-diario-YYYY-MM-DD)
+  // Abas fixas têm ID sem prefixo (diario, mensal, etc.)
+  const el = document.getElementById(id) || document.getElementById('tab-' + id);
+  if (el) el.classList.add('active');
+  renderTabBar(); renderAll();
+}
+
+// ── RENDER ALL ────────────────────────────────────────────────────────
+function renderAll() {
+  const a = abaAtiva;
+
+  // Abas dinâmicas do dia anterior
+  if (a.startsWith('tab-diario-')) {
+    const dk = a.replace('tab-diario-', '');
+    garantirTabDinamica(dk);
+    // Passa só o sufixo para renderRotinas não duplicar o prefixo 'tab-'
+    renderRotinas('diario-' + dk, ROTINAS_DIARIA, 'diario', dk);
+    return;
+  }
+  if (a.startsWith('tab-corvu-')) {
+    const dk = a.replace('tab-corvu-', '');
+    garantirTabDinamica(dk);
+    const tab = document.getElementById(a);
+    if (tab) {
+      const [,am,ad] = dk.split('-');
+      tab.innerHTML = `<div class="movimento-header">ROTINAS DO CORVU – ${ad}/${am}</div><div id="corvu-inner-${dk}"></div>`;
+      renderCorvuDia('corvu-inner-' + dk, ROTINAS_CORVU, dk);
+    }
+    return;
+  }
+
+  if(a==='diario')      renderRotinas('diario',      ROTINAS_DIARIA,       'diario',      diaAtual);
+  if(a==='corvudiario') renderCorvu('corvudiario',   ROTINAS_CORVU,        'corvu');
+  if(a==='fds')         renderRotinas('fds',         ROTINAS_FDS_NOVO,     'fds',         diaAtual);
+  if(a==='mensal')      renderRotinas('mensal',      ROTINAS_MENSAL,       'mensal',      null);
+  if(a==='corvumensal') renderCorvu('corvumensal',   ROTINAS_CORVU_MENSAL, 'corvumensal');
+  if(a==='unimed')      renderRotinas('unimed',      ROTINAS_UNIMED,       'unimed',      null);
+  if(a==='serasa')      renderRotinas('serasa',      ROTINAS_SERASA,       'serasa',      null);
+}
+
+function exportarPDF() {
+  const nomes = { diario:'Diaria', corvudiario:'Corvu_Diario', fds:'Final_de_Semana',
+                  mensal:'Mensal', corvumensal:'Corvu_Mensal', unimed:'Unimed', serasa:'Serasa' };
+  const [y,m,d] = diaAtual.split('-');
+  const nomePDF = `${nomes[abaAtiva]||abaAtiva}_${d}-${m}-${y}`;
+  document.title = nomePDF;
+
+  const tabAtiva = document.querySelector('.tab-content.active');
+  const substituicoes = [];
+
+  tabAtiva.querySelectorAll('input, textarea, select').forEach(el => {
+    const span = document.createElement('span');
+    span.className = 'print-value';
+    if (el.tagName === 'SELECT') {
+      const opt = el.options[el.selectedIndex];
+      span.textContent = opt ? opt.text : '';
+      if (el.value === 'executando') span.style.color = '#1a7f37';
+      else if (el.value === 'encerrado') span.style.color = '#1a7f37';
+      else if (el.value === 'erro') span.style.color = '#cf222e';
+      else span.style.color = '#888';
+    } else {
+      span.textContent = el.value || '—';
+    }
+    el.parentNode.insertBefore(span, el);
+    el.style.display = 'none';
+    substituicoes.push({ el, span });
+  });
+
+  window.print();
+
+  setTimeout(() => {
+    substituicoes.forEach(({ el, span }) => {
+      el.style.display = '';
+      span.remove();
+    });
+    document.title = 'Operações – Coamo';
+  }, 1500);
+}
+
+// ── DATA / HORA ───────────────────────────────────────────────────────
+function getDiaKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function getDiaAnteriorKey(key) {
+  const [y,m,d] = key.split('-').map(Number);
+  const dt = new Date(y,m-1,d); dt.setDate(dt.getDate()-1);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
+function formatarDataKey(key) { const [y,m,d]=key.split('-'); return `${d}/${m}/${y}`; }
+function getMovimentoHeader() {
+  const d = new Date();
+  const dia = String(d.getDate()).padStart(2,'0');
+  const mes = String(d.getMonth()+1).padStart(2,'0');
+  const ano = d.getFullYear();
+  return `ROTINAS DO UNIFACE - MOVIMENTO DO DIA – ${dia}/${mes}/${ano}`;
+}
+function horaAtual() { const n=new Date(); return n.getHours()*60+n.getMinutes(); }
+function horaParaMin(h) { if(!h||!h.match(/^\d{2}:\d{2}/))return -1; const[hh,mm]=h.split(':'); return parseInt(hh)*60+parseInt(mm); }
+let diaAtual = getDiaKey();
+
+// ── STORAGE (API servidor + localStorage fallback) ────────────────────
+// Detecta se está rodando via servidor (http://) ou arquivo local (file://)
+const USAR_API = location.protocol === 'http:' || location.protocol === 'https:';
+const API_URL  = USAR_API ? '/api/dados' : null;
+
+// Cache local dos dados (evita leituras repetidas)
+let _cache = {};
+
+// Carrega todos os dados do servidor na inicialização
+async function carregarDadosServidor() {
+  if (!USAR_API) return;
+  try {
+    const r = await fetch(API_URL);
+    if (r.ok) {
+      _cache = await r.json();
+      // Sincroniza cache → localStorage para compatibilidade
+      Object.entries(_cache).forEach(([k,v]) => {
+        try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch {}
+      });
+    }
+  } catch { /* servidor offline — usa localStorage */ }
+}
+
+// Salva uma chave no servidor e no localStorage
+async function salvarChave(chave, valor) {
+  const valorStr = typeof valor === 'string' ? valor : JSON.stringify(valor);
+  try { localStorage.setItem(chave, valorStr); } catch {}
+  if (!USAR_API) return;
+  try {
+    await fetch(`${API_URL}/${encodeURIComponent(chave)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ valor: valorStr })
+    });
+  } catch { /* servidor offline */ }
+}
+
+// Lê uma chave (do cache/localStorage)
+function lerChave(chave) {
+  if (USAR_API && _cache[chave] !== undefined) {
+    const v = _cache[chave];
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  }
+  return localStorage.getItem(chave);
+}
+
+// Polling: atualiza dados do servidor a cada 5 segundos (quando em modo web)
+function iniciarPolling() {
+  if (!USAR_API) return;
+  setInterval(async () => {
+    try {
+      const r = await fetch(API_URL + '?t=' + Date.now());
+      if (r.ok) {
+        const novos = await r.json();
+        let mudou = false;
+        Object.entries(novos).forEach(([k,v]) => {
+          const vStr = typeof v === 'string' ? v : JSON.stringify(v);
+          if (_cache[k] !== vStr) { _cache[k] = vStr; mudou = true; }
+        });
+        if (mudou) renderAll();
+      }
+    } catch {}
+  }, 5000);
+}
+
+// ── Funções de storage que usam a camada unificada ────────────────────
+function getStatusKey(p,dk) { return(p==='diario'||p==='fds')?'status_diaria_'+(dk||diaAtual):'status_'+p; }
+function getStatus(p,dk)    { try{return JSON.parse(lerChave(getStatusKey(p,dk))||'{}')}catch{return{}} }
+function saveStatus(p,obj,dk){ const k=getStatusKey(p,dk); salvarChave(k,JSON.stringify(obj)); if(USAR_API)_cache[k]=JSON.stringify(obj); }
+function getBlocked(p,dk)   { const k=(p==='diario'||p==='fds')?'blocked_diaria_'+(dk||diaAtual):'blocked_'+p; try{return JSON.parse(lerChave(k)||'[]')}catch{return[]} }
+function saveBlocked(p,arr,dk){ const k=(p==='diario'||p==='fds')?'blocked_diaria_'+(dk||diaAtual):'blocked_'+p; salvarChave(k,JSON.stringify(arr)); if(USAR_API)_cache[k]=JSON.stringify(arr); }
+function getCorvuDados(p) {
+  // Para o corvu diário, usa chave datada para suportar dia anterior
+  if (p === 'corvu') {
+    const k = 'corvu_dados_corvu_' + diaAtual;
+    try { return JSON.parse(lerChave(k) || '{}'); } catch { return {}; }
+  }
+  try { return JSON.parse(lerChave('corvu_dados_'+p) || '{}'); } catch { return {}; }
+}
+function saveCorvuCampo(p, idx, campo, val) {
+  // Para o corvu diário, salva com chave datada
+  const chave = p === 'corvu' ? 'corvu_dados_corvu_' + diaAtual : 'corvu_dados_' + p;
+  const d = getCorvuDados(p);
+  if (!d[idx]) d[idx] = {};
+  d[idx][campo] = val;
+  salvarChave(chave, JSON.stringify(d));
+  if (USAR_API) _cache[chave] = JSON.stringify(d);
+}
+function getCorvuBlocked(p) { try{return JSON.parse(lerChave('blocked_corvu_'+p)||'[]')}catch{return[]} }
+
+// ── PERMISSÕES POR PERFIL ─────────────────────────────────────────────
+// admin  → pode editar tudo (rotinas + horários)
+// Coamo1 → pode editar rotinas (status, início, fim, campos)
+//           NÃO pode editar a página de Horários
+const podeEditarHorarios = (role === 'admin');
+
+// ── AÇÕES ─────────────────────────────────────────────────────────────
+function mudarStatus(p,id,val,dk) {
+  const s=getStatus(p,dk); if(!s[id])s[id]={};
+  s[id].status=val; if(val!=='erro')s[id].msg='';
+  saveStatus(p,s,dk); renderAll();
+}
+function mudarCampo(p,id,campo,val,dk) {
+  const s=getStatus(p,dk); if(!s[id])s[id]={}; s[id][campo]=val; saveStatus(p,s,dk);
+}
+function toggleBlock(p,id,dk) {
+  let b=getBlocked(p,dk); b=b.includes(id)?b.filter(x=>x!==id):[...b,id]; saveBlocked(p,b,dk); renderAll();
+}
+function toggleCorvuBlock(p,idx) {
+  let b=getCorvuBlocked(p); b=b.includes(idx)?b.filter(x=>x!==idx):[...b,idx];
+  salvarChave('blocked_corvu_'+p,JSON.stringify(b));
+  if(USAR_API)_cache['blocked_corvu_'+p]=JSON.stringify(b);
+  renderAll();
+}
+
+// ── BUILD ROTINA HTML ─────────────────────────────────────────────────
+function buildRotinaHtml(r,p,dk,blocked,status,agora,isDiaria,badge) {
+  const isBlocked=blocked.includes(r.id);
+  const info=status[r.id]||{};
+  const st=info.status||'';
+  const minR=horaParaMin(r.hora);
+  const isCurrent=minR>=0&&agora>=minR&&agora<minR+60;
+  const dkk=dk||diaAtual;
+
+  let cls='rotina-item';
+  if(isBlocked)cls+=' blocked';
+  else if(st==='erro')cls+=' erro';
+  else if(st==='encerrado')cls+=' done';
+  else if(st==='executando'||isCurrent)cls+=' current';
+  // rotinas semStatus ficam escuras quando qualquer campo foi preenchido
+  else if(r.semStatus && (
+    (r.campos && r.campos.some(c => info[c.k] && info[c.k].trim() !== '')) ||
+    (r.campo && info.campoval && info.campoval.trim() !== '')
+  )) cls+=' done';
+
+  let html=`<div class="${cls}" id="ri_${r.id}_${dkk}">
+    <div class="rotina-time">${r.hora}</div>
+    <div style="flex:1;min-width:0;">
+      <div class="rotina-text">${r.texto}${badge?`<span class="badge-dia-anterior">Rotinas ${badge}</span>`:''}</div>
+      ${r.obs?`<div class="rotina-obs">${r.obs}</div>`:''}
+      ${r.caminho?`<div class="rotina-caminho">📂 ${r.caminho}</div>`:''}
+      ${st==='erro'&&info.msg?`<div class="erro-msg-view">⚠️ ${info.msg}</div>`:''}
+      ${st==='erro'&&info.chamado?`<div class="erro-msg-view" style="color:#ffb74d;">📋 Chamado: ${info.chamado}</div>`:''}
+    </div>
+    <div class="rotina-actions">
+      <div class="rotina-actions-row">
+        ${r.semStatus ? '' : `<select class="status-select ${st}" ${isBlocked?'disabled':''} onchange="mudarStatus('${p}','${r.id}',this.value,'${dkk}')">
+          <option value="" ${!st?'selected':''}>— Status —</option>
+          <option value="executando" ${st==='executando'?'selected':''}>▶ Executando</option>
+          <option value="encerrado"  ${st==='encerrado'?'selected':''}>✔ Encerrado</option>
+          <option value="erro"       ${st==='erro'?'selected':''}>✖ Erro</option>
+        </select>`}
+        <button class="btn-block ${isBlocked?'unblock':''}" onclick="toggleBlock('${p}','${r.id}','${dkk}')">${isBlocked?'🔓':'🔒'}</button>
+        ${r.campo?`<input type="text" class="turno-input campo-extra" placeholder="${r.campo}" value="${info.campoval||''}" onblur="mudarCampo('${p}','${r.id}','campoval',this.value,'${dkk}')${r.semStatus?';renderAll()':''}">`:'' }
+      </div>
+      ${r.campos?`<div class="rotina-actions-row" style="margin-top:4px;flex-wrap:wrap;">
+        ${r.campos.map(c=>`<span class="campo-label-wrap"><span class="campo-label">${c.label}</span>
+          <input type="text" class="turno-input campo-extra" placeholder="${c.label}" value="${info[c.k]||''}" onblur="mudarCampo('${p}','${r.id}','${c.k}',this.value,'${dkk}')${r.semStatus?';renderAll()':''}">
+        </span>`).join('')}
+      </div>`:''}`;
+
+  if(isDiaria && !r.semStatus) {
+    const showI=(st==='executando'||st==='encerrado'||st==='erro');
+    const showF=(st==='encerrado'||st==='erro');
+    if(showI||showF) html+=`<div class="rotina-actions-row hora-row" style="margin-top:5px;">`;
+    if(showI) html+=`<span class="hora-label">Início</span><input type="time" class="turno-input hora-input" value="${info.inicio||''}" onblur="mudarCampo('${p}','${r.id}','inicio',this.value,'${dkk}')">`;
+    if(showF) html+=`<span class="hora-label">Fim</span><input type="time" class="turno-input hora-input" value="${info.fim||''}" onblur="mudarCampo('${p}','${r.id}','fim',this.value,'${dkk}')">`;
+    if(showI||showF) html+=`</div>`;
+  }
+
+  if(st==='erro') html+=`
+    <textarea class="erro-desc" rows="2" placeholder="Descreva o erro..." style="margin-top:5px;" onblur="mudarCampo('${p}','${r.id}','msg',this.value,'${dkk}')">${info.msg||''}</textarea>
+    <input type="text" class="chamado-input" placeholder="Nº do Chamado (ex: INC0012345)" value="${info.chamado||''}" onblur="mudarCampo('${p}','${r.id}','chamado',this.value,'${dkk}')">`;
+
+  html+=`</div></div>`;
+  return html;
+}
+
+// ── RENDER ROTINAS ────────────────────────────────────────────────────
+function renderRotinas(tabId,rotinas,p,dk) {
+  const tab=document.getElementById('tab-'+tabId);
+  const blocked=getBlocked(p,dk), status=getStatus(p,dk), agora=horaAtual();
+  const isDiaria=(p==='diario'||p==='fds');
+
+  // Seções que devem ser renderizadas como tabela Corvu
+  const secoesCorvu = new Set(['Corvu Sábado','Corvu Domingo']);
+
+  let html=`<div class="movimento-header">${getMovimentoHeader()}</div>`;
+
+  // Bloco dia anterior — só aparece nas abas dinâmicas (tab-diario-YYYY-MM-DD), não na aba do dia atual
+  // (removido daqui — tratado em renderAll para abas dinâmicas)
+
+  const secoes={};
+  rotinas.forEach(r=>{ if(!secoes[r.secao])secoes[r.secao]=[]; secoes[r.secao].push(r); });
+
+  Object.entries(secoes).forEach(([sec,items])=>{
+    if(secoesCorvu.has(sec)) {
+      // Renderiza como tabela Corvu inline
+      const corvuPrefix = 'corvufds_' + sec.replace(/\s+/g,'_').toLowerCase();
+      const dados = getCorvuDados(corvuPrefix);
+      html+=`<div class="rotina-section"><h3>${sec}</h3>
+        <div style="overflow-x:auto;">
+        <table class="corvu-table"><thead><tr>
+          <th>Rotina</th><th>Início</th><th>Fim</th><th>Servidor</th><th>Usuário</th><th>Terminal</th>
+        </tr></thead><tbody>`;
+      items.forEach((r,idx)=>{
+        const d=dados[idx]||{};
+        html+=`<tr>
+          <td class="corvu-nome">${r.texto}</td>          <td><input type="time" class="corvu-input" value="${d.inicio||''}" onblur="saveCorvuCampo('${corvuPrefix}',${idx},'inicio',this.value)"></td>
+          <td><input type="time" class="corvu-input" value="${d.fim||''}" onblur="saveCorvuCampo('${corvuPrefix}',${idx},'fim',this.value)"></td>
+          <td><input type="text" class="corvu-input upper" placeholder="Servidor" value="${d.servidor||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${corvuPrefix}',${idx},'servidor',this.value)"></td>
+          <td><input type="text" class="corvu-input upper" placeholder="Usuário" value="${d.usuario||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${corvuPrefix}',${idx},'usuario',this.value)"></td>
+          <td><input type="text" class="corvu-input upper" placeholder="Terminal" value="${d.terminal||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${corvuPrefix}',${idx},'terminal',this.value)"></td>
+        </tr>`;
+      });
+      html+=`</tbody></table></div></div>`;
+    } else {
+      // Renderiza como rotinas normais
+      html+=`<div class="rotina-section"><h3>${sec}</h3>`;
+      items.forEach(r=>{ html+=buildRotinaHtml(r,p,dk,blocked,status,agora,isDiaria,null); });
+      html+=`</div>`;
+    }
+  });
+  tab.innerHTML=html;
+}
+
+// ── RENDER CORVU ──────────────────────────────────────────────────────
+function renderCorvu(tabId,lista,p) {
+  // Suporta tanto IDs com prefixo 'tab-' quanto IDs diretos
+  const tab = document.getElementById('tab-'+tabId) || document.getElementById(tabId);
+  const dados=getCorvuDados(p);
+  const comBloqueio=(p==='corvu');
+  const blocked=comBloqueio?getCorvuBlocked(p):[];
+
+  let html=`<div class="movimento-header">${getMovimentoHeader()}</div><div style="overflow-x:auto;">
+  <table class="corvu-table"><thead><tr>
+    <th>Rotina</th><th>Início</th><th>Fim</th><th>Servidor</th><th>Usuário</th><th>Terminal</th>
+    ${comBloqueio?'<th style="width:40px;"></th>':''}
+  </tr></thead><tbody>`;
+
+  lista.forEach((item,idx)=>{
+    const nome=typeof item==='string'?item:item.nome;
+    const d=dados[idx]||{};
+    const isB=blocked.includes(idx);
+    html+=`<tr${isB?' class="corvu-bloqueada"':''}>
+      <td class="corvu-nome">${nome}${isB?'<span class="badge-bloqueada">BLOQUEADA</span>':''}</td>
+      <td><input type="time" class="corvu-input" value="${d.inicio||''}" ${isB?'disabled':''} onblur="saveCorvuCampo('${p}',${idx},'inicio',this.value)"></td>
+      <td><input type="time" class="corvu-input" value="${d.fim||''}" ${isB?'disabled':''} onblur="saveCorvuCampo('${p}',${idx},'fim',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Servidor" value="${d.servidor||''}" ${isB?'disabled':''} oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${p}',${idx},'servidor',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Usuário" value="${d.usuario||''}" ${isB?'disabled':''} oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${p}',${idx},'usuario',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Terminal" value="${d.terminal||''}" ${isB?'disabled':''} oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampo('${p}',${idx},'terminal',this.value)"></td>
+      ${comBloqueio?`<td><button class="btn-block ${isB?'unblock':''}" onclick="toggleCorvuBlock('${p}',${idx})">${isB?'🔓':'🔒'}</button></td>`:''}
+    </tr>`;
+  });
+  html+=`</tbody></table></div>`;
+  tab.innerHTML=html;
+}
+
+// ── RENDER CORVU COM DATA (para abas dinâmicas do dia anterior) ───────
+function renderCorvuDia(containerId, lista, diaKey) {
+  const tab = document.getElementById('tab-' + containerId) || document.getElementById(containerId);
+  if (!tab) return;
+  const chave = 'corvu_dados_corvu_' + diaKey;
+  let dados = {};
+  try { dados = JSON.parse(lerChave(chave) || '{}'); } catch {}
+
+  let html = `<div style="overflow-x:auto;"><table class="corvu-table"><thead><tr>
+    <th>Rotina</th><th>Início</th><th>Fim</th><th>Servidor</th><th>Usuário</th><th>Terminal</th>
+  </tr></thead><tbody>`;
+
+  lista.forEach((item, idx) => {
+    const nome = typeof item === 'string' ? item : item.nome;
+    const d = dados[idx] || {};
+    html += `<tr>
+      <td class="corvu-nome">${nome}</td>
+      <td><input type="time" class="corvu-input" value="${d.inicio||''}" onblur="saveCorvuCampoDia('${diaKey}',${idx},'inicio',this.value)"></td>
+      <td><input type="time" class="corvu-input" value="${d.fim||''}" onblur="saveCorvuCampoDia('${diaKey}',${idx},'fim',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Servidor" value="${d.servidor||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampoDia('${diaKey}',${idx},'servidor',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Usuário" value="${d.usuario||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampoDia('${diaKey}',${idx},'usuario',this.value)"></td>
+      <td><input type="text" class="corvu-input upper" placeholder="Terminal" value="${d.terminal||''}" oninput="this.value=this.value.toUpperCase()" onblur="saveCorvuCampoDia('${diaKey}',${idx},'terminal',this.value)"></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
+  tab.innerHTML = html;
+}
+
+// ── RELÓGIO ───────────────────────────────────────────────────────────
+function atualizarRelogio() {
+  const now=new Date();
+  document.getElementById('relogioHeader').textContent=
+    now.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'})+' '+now.toLocaleTimeString('pt-BR');
+}
+function verificarMudancaDia() { const n=getDiaKey(); if(n!==diaAtual){diaAtual=n;renderAll();} }
+
+// ── INIT ──────────────────────────────────────────────────────────────
+renderTabBar(); renderAll(); atualizarRelogio();
+setInterval(atualizarRelogio,1000);
+setInterval(()=>{verificarMudancaDia();renderAll();},60000);
+</script>
+</body>
+</html>
